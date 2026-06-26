@@ -317,9 +317,11 @@ tbody td.muted{color:var(--text3)}
 // ══════════════════════════════════════════════════
 //  CONFIG
 // ══════════════════════════════════════════════════
-//  CONFIG — reemplazar con la URL del nuevo deployment
+//  CONFIG
+//  El dashboard habla con /api/data (proxy en Railway)
+//  que a su vez llama al Apps Script — sin CORS.
 // ══════════════════════════════════════════════════
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwK8_P46dKeETc_d1W63ozTnM2VSx6Xu7yFCkbXnfsfc8ncLlGINObJlPFo8X-dcbRueA/exec';
+const PROXY_URL  = '/api/data';   // endpoint local en Railway
 const REFRESH_MS = 30 * 60 * 1000;
 
 let state = {};
@@ -328,113 +330,43 @@ let autoRefreshInterval = null;
 const charts = {};
 
 // ══════════════════════════════════════════════════
-//  ESTRATEGIA 1: fetch() normal (funciona desde HTTPS)
-// ══════════════════════════════════════════════════
-async function fetchNormal(url) {
-  const res = await fetch(`${url}?sheet=all&_=${Date.now()}`, {
-    method: 'GET',
-    mode: 'cors',
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
-// ══════════════════════════════════════════════════
-//  ESTRATEGIA 2: JSONP (fallback si fetch falla por CORS)
-// ══════════════════════════════════════════════════
-function fetchJSONP(url) {
-  return new Promise((resolve, reject) => {
-    const cbName = '_cb_' + Date.now();
-    const script  = document.createElement('script');
-    const timer   = setTimeout(() => {
-      cleanup();
-      reject(new Error('Timeout (15s) — el Apps Script no respondió'));
-    }, 15000);
-
-    window[cbName] = (data) => { cleanup(); resolve(data); };
-
-    function cleanup() {
-      clearTimeout(timer);
-      delete window[cbName];
-      script.parentNode && script.parentNode.removeChild(script);
-    }
-
-    script.onerror = () => {
-      cleanup();
-      reject(new Error('El Apps Script no es accesible. Verificá que esté publicado como Web App con acceso "Anyone".'));
-    };
-    script.src = `${url}?sheet=all&callback=${cbName}&_=${Date.now()}`;
-    document.head.appendChild(script);
-  });
-}
-
-// ══════════════════════════════════════════════════
-//  CARGA DE DATOS — intenta fetch, cae a JSONP
+//  CARGA DE DATOS vía proxy Railway → Apps Script
 // ══════════════════════════════════════════════════
 async function loadData(manual = false) {
   const btn = document.getElementById('btnRefresh');
   btn.classList.add('loading');
   setStatus('connecting');
   if (manual) showToast('Actualizando datos…');
-  document.getElementById('loadingTxt').textContent = 'Conectando con Google Sheets…';
-
-  let json = null;
-
-  // Intento 1: fetch normal (funciona cuando Apps Script tiene CORS)
-  try {
-    json = await fetchNormal(APPS_SCRIPT_URL);
-    console.log('✓ fetch() exitoso');
-  } catch (e1) {
-    console.warn('fetch() falló, intentando JSONP:', e1.message);
-    // Intento 2: JSONP
-    try {
-      json = await fetchJSONP(APPS_SCRIPT_URL);
-      console.log('✓ JSONP exitoso');
-    } catch (e2) {
-      console.error('JSONP también falló:', e2.message);
-      // Ambos fallaron
-      const msg = diagnoseError(e2.message);
-      setStatus('error');
-      showToast('⚠ Sin conexión con el Sheet');
-      ['errCartera','errFin','errCaja','errUSD'].forEach(id => showError(id, msg));
-      btn.classList.remove('loading');
-      document.getElementById('loadingOverlay').classList.add('hidden');
-      return;
-    }
-  }
 
   try {
-    if (!json.ok) throw new Error(json.error || 'El servidor devolvió un error');
+    const res = await fetch(`${PROXY_URL}?sheet=all&_=${Date.now()}`);
+    if (!res.ok) throw new Error(`Proxy HTTP ${res.status}`);
+    const json = await res.json();
+    if (!json.ok) throw new Error(json.error || 'El Apps Script devolvió un error');
+
     state = json.data;
     setStatus('live');
     document.getElementById('lastUpdate').textContent =
       'Act. ' + new Date(state.meta?.updated || Date.now())
         .toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
-    // Limpiar banners de error
+
     document.querySelectorAll('.error-banner').forEach(el => el.classList.remove('show'));
     renderAll();
     if (manual) showToast('Datos actualizados ✓');
+
   } catch (e) {
-    console.error('Error procesando respuesta:', e);
+    console.error('loadData error:', e);
     setStatus('error');
-    const msg = diagnoseError(e.message);
-    ['errCartera','errFin','errCaja','errUSD'].forEach(id => showError(id, msg));
-    showToast('⚠ Error en la respuesta del servidor');
+    showToast('⚠ ' + e.message);
+    const msg = e.message;
+    if (!state.cartera)    showError('errCartera', msg);
+    if (!state.financiero) showError('errFin',     msg);
+    if (!state.caja)       showError('errCaja',    msg);
+    if (!state.caja_usd)   showError('errUSD',     msg);
   } finally {
     btn.classList.remove('loading');
     document.getElementById('loadingOverlay').classList.add('hidden');
   }
-}
-
-// Mensaje de diagnóstico útil según el error
-function diagnoseError(msg) {
-  if (msg.includes('Timeout'))
-    return '⏱ Timeout: el Apps Script tardó más de 15s. Verificá que el deployment esté activo.';
-  if (msg.includes('accesible') || msg.includes('onerror') || msg.includes('red'))
-    return '🔗 No se pudo conectar con el Apps Script. Pasos: 1) Abrí Apps Script → 2) Deploy → New deployment → 3) Execute as: Me, Who has access: Anyone → 4) Copiá la nueva URL y pegala en index.html como APPS_SCRIPT_URL.';
-  if (msg.includes('HTTP 4'))
-    return '❌ Error de autenticación (HTTP 4xx). Asegurate de publicar con "Who has access: Anyone".';
-  return msg;
 }
 
 function setStatus(s) {
@@ -449,14 +381,12 @@ function showError(id, msg) {
   const el = document.getElementById(id);
   if (!el) return;
   el.innerHTML = `
-    <div style="color:var(--red);font-weight:600;margin-bottom:8px;font-size:14px">⚠ Sin datos del servidor</div>
-    <div style="color:var(--text2);margin-bottom:10px">${msg}</div>
-    <div style="font-size:12px;color:var(--text3);border-top:1px solid rgba(255,255,255,0.06);padding-top:10px;margin-top:4px">
-      <strong style="color:var(--text2)">Checklist rápido:</strong><br>
-      1. Abrí el <strong>Apps Script</strong> → <em>Deploy → New deployment</em> → Type: Web App<br>
-      2. <em>Execute as:</em> <code>Me</code> &nbsp;|&nbsp; <em>Who has access:</em> <code>Anyone</code><br>
-      3. Copiá la nueva URL y reemplazala en <code>index.html → APPS_SCRIPT_URL</code><br>
-      4. Hacé <em>Redeploy</em> en Railway.
+    <div style="color:var(--red);font-weight:600;margin-bottom:6px">⚠ Sin datos del servidor</div>
+    <div style="color:var(--text2);margin-bottom:10px;font-size:12px">${msg}</div>
+    <div style="font-size:12px;color:var(--text3);border-top:1px solid rgba(255,255,255,0.06);padding-top:10px">
+      Verificá que el <strong style="color:var(--text2)">Apps Script</strong> esté publicado:
+      <em>Deploy → New deployment → Execute as: Me → Who has access: Anyone</em>
+      y que la URL en <code>server.js → APPS_SCRIPT_URL</code> sea la correcta.
     </div>`;
   el.classList.add('show');
 }
