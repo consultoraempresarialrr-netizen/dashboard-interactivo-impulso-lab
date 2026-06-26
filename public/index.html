@@ -466,77 +466,104 @@ function renderAll() {
 }
 
 // ══════════════════════════════════════════════════
-//  RENDER CARTERA
+//  RENDER CARTERA  (formato ancho: filas=conceptos, columnas=meses)
 // ══════════════════════════════════════════════════
 function renderCartera() {
   const data = state.cartera;
   if (!data || !data.rows) return;
 
-  // Ocultar banner de error si hay datos
   const err = document.getElementById('errCartera');
   if (err) err.classList.remove('show');
 
   const rows = data.rows;
-  // Detectar columna Mes automáticamente (primera columna que tenga "mes" en el nombre, o primera columna)
-  const mesKey = Object.keys(rows[0] || {}).find(k => k.toLowerCase().includes('mes')) || Object.keys(rows[0] || {})[0];
-  const conceptoKey = Object.keys(rows[0] || {}).find(k => k.toLowerCase().includes('concepto') || k.toLowerCase().includes('descripcion')) || 'Concepto';
-  const montoKey = Object.keys(rows[0] || {}).find(k => k.toLowerCase().includes('monto') || k.toLowerCase().includes('valor') || k.toLowerCase().includes('importe')) || 'Monto';
+  if (!rows.length) return;
 
-  const meses = [...new Set(rows.map(r => r[mesKey]).filter(Boolean))];
+  const MESES_ORDER = ['enero','febrero','marzo','abril','mayo','junio','julio',
+                       'agosto','septiembre','octubre','noviembre','diciembre'];
+
+  // Valor numérico de una fila para un mes dado
+  const numVal = (row, mes) => {
+    if (!row) return 0;
+    const v = row[mes];
+    if (v === '' || v == null) return 0;
+    const n = Number(v);
+    return isNaN(n) ? 0 : n;
+  };
+
+  // Buscar fila por nombre exacto (case-insensitive, trim)
+  const findRow = (nombre) => {
+    const n = nombre.toLowerCase().trim();
+    return rows.find(r => String(r[''] || '').toLowerCase().trim() === n);
+  };
+
+  // Meses con datos: donde TOTAL INGRESOS tiene valor
+  const totalIngRow = findRow('total ingresos');
+  const mesesConDatos = MESES_ORDER.filter(m => totalIngRow && numVal(totalIngRow, m) > 0);
+
+  if (!mesesConDatos.length) {
+    showError('errCartera', 'No se encontraron datos de ingresos. Verificá la fila "TOTAL INGRESOS" en la hoja.');
+    return;
+  }
 
   // Populate select
   const sel = document.getElementById('carteraMesSelect');
   const saved = sel.value;
   sel.innerHTML = '<option value="all">Todos los meses</option>';
-  meses.forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o); });
-  if (saved && saved !== 'all') sel.value = saved;
+  mesesConDatos.forEach(m => {
+    const o = document.createElement('option');
+    o.value = m;
+    o.textContent = m.charAt(0).toUpperCase() + m.slice(1);
+    sel.appendChild(o);
+  });
+  if (saved && saved !== 'all' && mesesConDatos.includes(saved)) sel.value = saved;
 
-  const filteredMes = sel.value === 'all' ? (meses[meses.length - 1] || '') : sel.value;
-  const prevMes = meses[meses.indexOf(filteredMes) - 1] || null;
+  const filteredMes = sel.value === 'all' ? mesesConDatos[mesesConDatos.length - 1] : sel.value;
+  const prevMes     = mesesConDatos[mesesConDatos.indexOf(filteredMes) - 1] || null;
 
-  const get = (mes, concepto) => {
-    const r = rows.find(x => x[mesKey] === mes && String(x[conceptoKey]).toLowerCase() === concepto.toLowerCase());
-    return r ? Number(r[montoKey]) : 0;
-  };
+  // Filas clave
+  const fijosRow    = findRow('ingresos fijos mensuales');
+  const evRow       = findRow('ingresos eventuales');
+  const ubRow       = findRow('utilidad bruta');
+  const unRow       = findRow('utilidad neta');
 
-  // Intentar leer datos con nombres flexibles
-  const ventas    = get(filteredMes, 'Ventas') || get(filteredMes, 'VENTAS') || get(filteredMes, 'Total Ingresos') || get(filteredMes, 'TOTAL INGRESOS');
-  const ub        = get(filteredMes, 'Utilidad Bruta') || get(filteredMes, 'UTILIDAD BRUTA');
-  const un        = get(filteredMes, 'Utilidad Neta')  || get(filteredMes, 'UTILIDAD NETA');
-  const fiscal    = get(filteredMes, 'Ventas Fiscal')  || get(filteredMes, 'Fiscal');
-  const noFiscal  = get(filteredMes, 'Ventas No Fiscal') || get(filteredMes, 'No Fiscal');
-  const costoFree = get(filteredMes, 'Costo Freelancers') || get(filteredMes, 'Costo freelancers - Delfina Venturi');
-  const gastos    = get(filteredMes, 'Gastos Estructura') || get(filteredMes, 'Gastos - Estructura Operativa') || get(filteredMes, 'GASTOS - ESTRUCTURA OPERATIVA');
-  const margen    = ventas ? ((un / ventas) * 100).toFixed(1) : 0;
+  const ventas   = numVal(totalIngRow, filteredMes);
+  const fijos    = fijosRow ? numVal(fijosRow, filteredMes) : 0;
+  const eventu   = evRow    ? numVal(evRow,    filteredMes) : 0;
+  const ub       = ubRow    ? numVal(ubRow,    filteredMes) : 0;
+  const un       = unRow    ? numVal(unRow,    filteredMes) : 0;
+  const margen   = ventas   ? ((un / ventas) * 100).toFixed(1) : 0;
 
   // KPIs
   document.getElementById('k-ventas').textContent = fmtARS(ventas);
   document.getElementById('k-ub').textContent     = fmtARS(ub);
   document.getElementById('k-un').textContent     = fmtARS(un);
   document.getElementById('k-margen').textContent = margen + '%';
-  setDelta('k-ventas-d', delta(ventas, get(prevMes, 'Ventas') || get(prevMes, 'VENTAS')));
-  setDelta('k-un-d', delta(un, get(prevMes, 'Utilidad Neta') || get(prevMes, 'UTILIDAD NETA')));
+
+  const ventasPrev = prevMes ? numVal(totalIngRow, prevMes) : null;
+  const unPrev     = prevMes && unRow ? numVal(unRow, prevMes) : null;
+  setDelta('k-ventas-d', ventasPrev ? delta(ventas, ventasPrev) : null);
+  setDelta('k-un-d',     unPrev     ? delta(un, unPrev)         : null);
   document.getElementById('k-ub-d').textContent = ventas ? (ub / ventas * 100).toFixed(1) + '% margen bruto' : '—';
 
-  // Ingresos info
+  // Composición ingresos: fijos vs eventuales
   document.getElementById('ingresosInfo').innerHTML = `
     <div style="display:flex;gap:16px;margin-bottom:8px">
-      <div style="flex:1"><div style="font-size:11px;color:var(--text3);margin-bottom:2px">FISCAL</div>
-        <div style="font-size:16px;font-weight:600;color:var(--accent)">${fmtARS(fiscal)}</div>
-        <div style="font-size:11px;color:var(--text3)">${ventas ? (fiscal / ventas * 100).toFixed(1) : 0}%</div></div>
-      <div style="flex:1"><div style="font-size:11px;color:var(--text3);margin-bottom:2px">NO FISCAL</div>
-        <div style="font-size:16px;font-weight:600;color:var(--purple)">${fmtARS(noFiscal)}</div>
-        <div style="font-size:11px;color:var(--text3)">${ventas ? (noFiscal / ventas * 100).toFixed(1) : 0}%</div></div>
+      <div style="flex:1"><div style="font-size:11px;color:var(--text3);margin-bottom:2px">FIJOS</div>
+        <div style="font-size:16px;font-weight:600;color:var(--accent)">${fmtARS(fijos)}</div>
+        <div style="font-size:11px;color:var(--text3)">${ventas ? (fijos / ventas * 100).toFixed(1) : 0}%</div></div>
+      <div style="flex:1"><div style="font-size:11px;color:var(--text3);margin-bottom:2px">EVENTUALES</div>
+        <div style="font-size:16px;font-weight:600;color:var(--purple)">${fmtARS(eventu)}</div>
+        <div style="font-size:11px;color:var(--text3)">${ventas ? (eventu / ventas * 100).toFixed(1) : 0}%</div></div>
     </div>`;
 
   // Chart ingresos
   mkChart('chartIngresos', {
     type: 'bar',
     data: {
-      labels: meses,
+      labels: mesesConDatos.map(m => m.charAt(0).toUpperCase() + m.slice(1)),
       datasets: [
-        { label: 'Fiscal',    data: meses.map(m => get(m, 'Ventas Fiscal') || get(m, 'Fiscal')),    backgroundColor: '#5b8df6', borderRadius: 4 },
-        { label: 'No Fiscal', data: meses.map(m => get(m, 'Ventas No Fiscal') || get(m, 'No Fiscal')), backgroundColor: '#a78bfa', borderRadius: 4 },
+        { label: 'Fijos',      data: mesesConDatos.map(m => fijosRow ? numVal(fijosRow, m) : 0), backgroundColor: '#5b8df6', borderRadius: 4 },
+        { label: 'Eventuales', data: mesesConDatos.map(m => evRow    ? numVal(evRow, m)    : 0), backgroundColor: '#a78bfa', borderRadius: 4 },
       ]
     },
     options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: baseScales(v => '$' + Math.round(v / 1000000) + 'M') }
@@ -546,37 +573,55 @@ function renderCartera() {
   mkChart('chartEvolucion', {
     type: 'line',
     data: {
-      labels: meses,
+      labels: mesesConDatos.map(m => m.charAt(0).toUpperCase() + m.slice(1)),
       datasets: [
-        { label: 'Ventas',        data: meses.map(m => get(m, 'Ventas') || get(m, 'VENTAS')),             borderColor: '#5b8df6', backgroundColor: 'rgba(91,141,246,0.08)', fill: true, tension: 0.3, pointRadius: 5, pointBackgroundColor: '#5b8df6' },
-        { label: 'Utilidad Neta', data: meses.map(m => get(m, 'Utilidad Neta') || get(m, 'UTILIDAD NETA')), borderColor: '#34c78a', backgroundColor: 'rgba(52,199,138,0.08)', fill: true, tension: 0.3, pointRadius: 5, pointBackgroundColor: '#34c78a' },
+        { label: 'Ventas',        data: mesesConDatos.map(m => numVal(totalIngRow, m)), borderColor: '#5b8df6', backgroundColor: 'rgba(91,141,246,0.08)', fill: true, tension: 0.3, pointRadius: 5, pointBackgroundColor: '#5b8df6' },
+        ...(unRow ? [{ label: 'Utilidad Neta', data: mesesConDatos.map(m => numVal(unRow, m)), borderColor: '#34c78a', backgroundColor: 'rgba(52,199,138,0.08)', fill: true, tension: 0.3, pointRadius: 5, pointBackgroundColor: '#34c78a' }] : [])
       ]
     },
     options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: baseScales(v => '$' + Math.round(v / 1000000) + 'M') }
   });
 
+  // ── Detectar sección EGRESOS ───────────────────────────────
+  // La fila separadora tiene "" vacío y "enero" = "EGRESOS"
+  const egresosIdx = rows.findIndex(r =>
+    !String(r[''] || '').trim() &&
+    String(r['enero'] || '').trim().toUpperCase() === 'EGRESOS'
+  );
+
+  // Filas de egresos: desde egresosIdx+1 hasta primer fila con nombre que incluya "total"
+  let egresoRows = [];
+  if (egresosIdx >= 0) {
+    const totalEgIdx = rows.findIndex((r, i) =>
+      i > egresosIdx && String(r[''] || '').toLowerCase().trim().startsWith('total')
+    );
+    const endIdx = totalEgIdx > 0 ? totalEgIdx : rows.length;
+    egresoRows = rows.slice(egresosIdx + 1, endIdx).filter(r => {
+      const name = String(r[''] || '').trim();
+      return name && numVal(r, filteredMes) > 0;
+    });
+  }
+
   // Waterfall
+  const totalEgresos = egresoRows.reduce((sum, r) => sum + numVal(r, filteredMes), 0);
+  const wfUn = unRow ? un : ventas - totalEgresos;
   const wfItems = [
-    { label: 'Ventas',          val: ventas,    color: '#5b8df6' },
-    { label: 'Costo freelancer',val: costoFree, color: '#e05252' },
-    { label: '= Utilidad Bruta',val: ub,        color: '#f0a82e' },
-    { label: 'Gastos estructura',val: gastos,   color: '#e05252' },
-    { label: '= Utilidad Neta', val: un,        color: un >= 0 ? '#34c78a' : '#e05252' },
+    { label: 'Ingresos',         val: ventas,        color: '#5b8df6' },
+    { label: 'Total egresos',    val: -totalEgresos, color: '#e05252' },
+    { label: '= Resultado neto', val: wfUn,          color: wfUn >= 0 ? '#34c78a' : '#e05252' },
   ];
   const maxAbs = Math.max(...wfItems.map(i => Math.abs(i.val || 0)), 1);
   document.getElementById('waterfallContainer').innerHTML = wfItems.map(item => `
     <div class="wf-bar">
       <div class="wf-label">${item.label}</div>
       <div class="wf-track"><div class="wf-fill" style="width:${Math.abs(item.val || 0) / maxAbs * 100}%;background:${item.color};opacity:0.85"></div></div>
-      <div class="wf-val" style="color:${item.color}">${(item.val || 0) < 0 ? '-' : ''}${fmtARS(item.val)}</div>
+      <div class="wf-val" style="color:${item.color}">${(item.val || 0) < 0 ? '-' : ''}${fmtARS(Math.abs(item.val))}</div>
     </div>`).join('');
 
-  // Estructura costos — leer todos los conceptos del mes
-  const costoConceptos = rows.filter(r => r[mesKey] === filteredMes);
-  const costoColors    = ['#a78bfa','#5b8df6','#f0a82e','#34c78a','#e05252','#6b8e9f','#e87ba4','#eb6834'];
-  const costoItems = costoConceptos
-    .filter(r => Number(r[montoKey]) < 0 && !String(r[conceptoKey]).toLowerCase().includes('utilidad'))
-    .map((r, i) => ({ label: r[conceptoKey], pct: ventas ? Math.abs(Number(r[montoKey])) / ventas * 100 : 0, color: costoColors[i % costoColors.length] }))
+  // Estructura de costos
+  const costoColors = ['#a78bfa','#5b8df6','#f0a82e','#34c78a','#e05252','#6b8e9f','#e87ba4','#eb6834'];
+  const costoItems = egresoRows
+    .map((r, i) => ({ label: String(r['']), monto: numVal(r, filteredMes), pct: ventas ? numVal(r, filteredMes) / ventas * 100 : 0, color: costoColors[i % costoColors.length] }))
     .sort((a, b) => b.pct - a.pct)
     .slice(0, 8);
 
@@ -586,31 +631,32 @@ function renderCartera() {
       <div class="progress-track"><div class="progress-fill" style="width:${Math.min(i.pct, 100)}%;background:${i.color}"></div></div>
     </div>`).join('') || '<p style="color:var(--text3);font-size:13px">Sin datos de costos disponibles.</p>';
 
-  // Gastos table — todos los conceptos negativos
-  const gastosRows = costoConceptos.filter(r => Number(r[montoKey]) < 0 && !String(r[conceptoKey]).toLowerCase().includes('utilidad'));
-  document.getElementById('gastosTable').innerHTML = gastosRows.map(r => {
-    const m  = Number(r[montoKey]);
-    const p  = rows.find(x => x[mesKey] === prevMes && x[conceptoKey] === r[conceptoKey]);
-    const dv = p ? delta(m, Number(p[montoKey])) : null;
-    const pct = ventas ? (Math.abs(m) / ventas * 100).toFixed(2) : 0;
-    return `<tr><td>${r[conceptoKey]}</td><td class="num">${fmtARS(m)}</td><td class="num">${pct}%</td>
+  // Gastos table
+  document.getElementById('gastosTable').innerHTML = egresoRows.map(r => {
+    const m   = numVal(r, filteredMes);
+    const mp  = prevMes ? numVal(r, prevMes) : null;
+    const dv  = mp ? delta(m, mp) : null;
+    const pct = ventas ? (m / ventas * 100).toFixed(2) : 0;
+    return `<tr><td>${r['']}</td><td class="num">${fmtARS(m)}</td><td class="num">${pct}%</td>
       <td>${dv !== null ? `<span class="tag ${Math.abs(Number(dv)) < 3 ? 'tag-blue' : Number(dv) > 0 ? 'tag-red' : 'tag-green'}">${Number(dv) > 0 ? '+' : ''}${dv}%</span>` : '<span class="tag tag-blue">—</span>'}</td></tr>`;
   }).join('') || '<tr><td colspan="4" style="color:var(--text3);text-align:center;padding:24px">Sin datos de gastos disponibles</td></tr>';
 
-  // Top clientes (si la hoja tiene datos de clientes)
-  const clienteKey = Object.keys(rows[0] || {}).find(k => k.toLowerCase().includes('cliente'));
-  if (clienteKey) {
-    const clientesMes = rows.filter(r => r[mesKey] === filteredMes && r[clienteKey]);
-    if (clientesMes.length) {
+  // Top clientes: filas de ingresos fijos con valor en el mes (clientes individuales)
+  const fijosIdx = rows.findIndex(r => String(r[''] || '').toLowerCase().trim() === 'ingresos fijos mensuales');
+  const evIdx    = rows.findIndex(r => String(r[''] || '').toLowerCase().trim() === 'ingresos eventuales');
+  if (fijosIdx >= 0 && evIdx > fijosIdx) {
+    const clienteRows = rows.slice(fijosIdx + 1, evIdx).filter(r => String(r[''] || '').trim() && numVal(r, filteredMes) > 0);
+    if (clienteRows.length) {
       document.getElementById('topClientesCard').style.display = 'block';
+      const sorted = [...clienteRows].sort((a, b) => numVal(b, filteredMes) - numVal(a, filteredMes)).slice(0, 6);
       document.getElementById('topClientes').innerHTML = `
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px">
-          ${clientesMes.slice(0, 6).map((c, i) => `
+          ${sorted.map((c, i) => `
             <div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px 16px">
               <div style="font-size:11px;color:var(--text3);margin-bottom:6px">#${i + 1}</div>
-              <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:6px">${c[clienteKey]}</div>
-              <div style="font-size:18px;font-weight:600;color:var(--accent)">${fmtARS(c[montoKey])}</div>
-              <div style="font-size:11px;color:var(--text3);margin-top:4px">${ventas ? (Math.abs(Number(c[montoKey])) / ventas * 100).toFixed(1) : 0}% del total</div>
+              <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:6px">${c['']}</div>
+              <div style="font-size:18px;font-weight:600;color:var(--accent)">${fmtARS(numVal(c, filteredMes))}</div>
+              <div style="font-size:11px;color:var(--text3);margin-top:4px">${ventas ? (numVal(c, filteredMes) / ventas * 100).toFixed(1) : 0}% del total</div>
             </div>`).join('')}
         </div>`;
     }
